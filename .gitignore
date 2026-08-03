@@ -1,0 +1,10 @@
+.DS_Store
+.kiro/settings/mcp.json
+# v3 工作区钩子：由 install-v3-hooks.sh 生成，里面是本机绝对路径，不该进仓库。
+# 模板在 clients/kiro-cli/v3-hooks-kiboard.json
+.kiro/hooks/
+firmware/.pio/
+firmware/src/secrets.h
+hardware/**/~*.lck
+hardware/kiboard/.history/
+hub/target/

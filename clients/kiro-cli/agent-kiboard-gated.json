@@ -1,0 +1,80 @@
+{
+  "name": "kiboard-gated",
+  "description": "危险操作要在 kiboard 实体键盘上按键批准的开发 agent",
+  "tools": [
+    "fs_read",
+    "fs_write",
+    "execute_bash",
+    "glob",
+    "grep",
+    "use_subagent",
+    "thinking",
+    "todo",
+    "web_search",
+    "web_fetch"
+  ],
+  "allowedTools": [
+    "fs_read",
+    "glob",
+    "grep",
+    "thinking",
+    "todo",
+    "web_search",
+    "web_fetch",
+    "execute_bash",
+    "fs_write",
+    "use_subagent"
+  ],
+  "hooks": {
+    "preToolUse": [
+      {
+        "matcher": "execute_bash",
+        "command": "/Users/wellxie/projects/claw-works/kiboard/clients/kiro-cli/hook.sh",
+        "timeout_ms": 180000,
+        "cache_ttl_seconds": 0
+      },
+      {
+        "matcher": "fs_write",
+        "command": "/Users/wellxie/projects/claw-works/kiboard/clients/kiro-cli/hook.sh",
+        "timeout_ms": 180000,
+        "cache_ttl_seconds": 0
+      },
+      {
+        "matcher": "use_subagent",
+        "command": "/Users/wellxie/projects/claw-works/kiboard/clients/kiro-cli/hook.sh",
+        "timeout_ms": 180000,
+        "cache_ttl_seconds": 0
+      }
+    ],
+    "agentSpawn": [
+      {
+        "command": "/Users/wellxie/projects/claw-works/kiboard/clients/kiro-cli/state-hook.sh start",
+        "timeout_ms": 5000
+      }
+    ],
+    "userPromptSubmit": [
+      {
+        "command": "/Users/wellxie/projects/claw-works/kiboard/clients/kiro-cli/state-hook.sh working",
+        "timeout_ms": 5000
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "/Users/wellxie/projects/claw-works/kiboard/clients/kiro-cli/state-hook.sh working",
+        "timeout_ms": 5000
+      },
+      {
+        "matcher": "todo_list",
+        "command": "$KIBOARD_CLIENTS/kiro-cli/tasks-hook.sh",
+        "timeout_ms": 8000,
+        "cache_ttl_seconds": 0
+      }
+    ],
+    "stop": [
+      {
+        "command": "/Users/wellxie/projects/claw-works/kiboard/clients/kiro-cli/state-hook.sh your_turn",
+        "timeout_ms": 5000
+      }
+    ]
+  }
+}

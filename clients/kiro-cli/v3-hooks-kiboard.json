@@ -1,0 +1,85 @@
+{
+  "_comment": [
+    "Kiro CLI v3（--v3）的审批闸门。拷到工作区 .kiro/hooks/kiboard.json 即生效。",
+    "",
+    "和 2.x 的关键区别：",
+    "  1. 作用范围是【整个工作区的所有会话】，不需要 --agent。",
+    "     2.x 的 hooks 写在 agent 配置里，只有用那个 agent 起的会话才生效。",
+    "  2. matcher 是【真正则】。2.16 的 agent 配置里 matcher 是字面量比较，",
+    "     写 'a|b' 会得到一个静默永不触发的 hook —— 两边搬配置时务必注意。",
+    "     这两条都是实测出来的，见 clients/kiro-cli/README.md。",
+    "",
+    "触发器名是 PascalCase（PreToolUse），2.x 是 camelCase（preToolUse）。",
+    "退出码语义一致：0 放行、2 阻止且 stderr 回给模型。所以 hook.sh 不用改。"
+  ],
+
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "kiboard 审批闸门",
+      "trigger": "PreToolUse",
+      "_why_matcher": [
+        "只管 execute_bash、删文件、委派子 agent 三类。",
+        "",
+        "刻意【不】管普通文件编辑（fs_write / str_replace / fs_append）：",
+        "rules.toml 的 default 是 normal，也就是没命中规则就要问人，",
+        "而一次改动往往几十次编辑 —— 那会变成几十次按键。",
+        "审批疲劳是真实的失败模式：人开始条件反射按 1，闸门就成了摆设，",
+        "比没有更糟，因为它给人一种被保护的错觉。",
+        "另外仓库里的文件编辑有 git 兜底，而 execute_bash 会伸到仓库外面",
+        "（装包、发网络请求、动别的机器），那才是需要人看一眼的地方。",
+        "",
+        "delete_file 单独列进来：它删的可能是未跟踪文件，git 救不回来。",
+        "委派类工具必须列进来 —— 实测子 agent 完全不经过父 agent 的钩子，",
+        "漏掉它等于留一个'让子 agent 去执行'的后门。"
+      ],
+      "matcher": "^(execute_bash|delete_file|orchestrate_subagent|use_subagent)$",
+      "action": {
+        "type": "command",
+        "command": "$HOME/.kiboard/clients/kiro-cli/hook.sh"
+      },
+      "_why_timeout": "要留够人走到设备前按键的时间，并且必须大于 hub 的 KIBOARD_TIMEOUT_S，否则 hook 先超时、裁决权就不在 kiboard 手里了",
+      "timeout": 180
+    },
+
+    {
+      "name": "kiboard 任务上报",
+      "trigger": "PostToolUse",
+      "_why": "agent 的待办清单本身是个工具调用，所以它每次变更都会经过 PostToolUse，而 tool_response 里带的是整份清单快照",
+      "matcher": "^todo_list$",
+      "action": {
+        "type": "command",
+        "command": "$HOME/.kiboard/clients/kiro-cli/tasks-hook.sh"
+      },
+      "timeout": 8
+    },
+
+    {
+      "name": "kiboard 状态上报-开始",
+      "trigger": "SessionStart",
+      "action": {
+        "type": "command",
+        "command": "$HOME/.kiboard/clients/kiro-cli/state-hook.sh start"
+      },
+      "timeout": 5
+    },
+    {
+      "name": "kiboard 状态上报-干活",
+      "trigger": "UserPromptSubmit",
+      "action": {
+        "type": "command",
+        "command": "$HOME/.kiboard/clients/kiro-cli/state-hook.sh working"
+      },
+      "timeout": 5
+    },
+    {
+      "name": "kiboard 状态上报-轮到你",
+      "trigger": "Stop",
+      "action": {
+        "type": "command",
+        "command": "$HOME/.kiboard/clients/kiro-cli/state-hook.sh your_turn"
+      },
+      "timeout": 5
+    }
+  ]
+}

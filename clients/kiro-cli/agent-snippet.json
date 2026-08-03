@@ -1,0 +1,76 @@
+{
+  "_说明": [
+    "把 hooks 与 allowedTools 两段合并进你的 agent 配置",
+    "（~/.kiro/agents/<name>.json 或项目级 .kiro/agents/）。",
+    "Kiro CLI 2.16 的 hooks 只认 agent 配置，不读 .kiro/hooks/*.json（实测确认，那是 3.0 的布局）。",
+    "改完用 kiro-cli agent validate --path <path> 校验。",
+    "各项结论的实测依据见 docs/kiro-hook-findings.md。"
+  ],
+  "_timeout_说明": [
+    "⚠️ 最要紧的一项：实测 hook 超时是 fail-open —— 超时后工具照样执行。",
+    "所以 timeout_ms 必须显著大于 hub 的 KIBOARD_APPROVE_TIMEOUT_S（默认 120s），",
+    "让 hub 先超时返回 decision=timeout，由 kiboard-ask 主动 exit 2 阻止。",
+    "默认 timeout_ms 只有 30000，等人按键根本不够，不改就会常态性地静默放行。"
+  ],
+  "_allowedTools_说明": [
+    "实测顺序是：preToolUse hook -> 内置权限判断 -> 执行。",
+    "所以要走设备审批的工具必须列进 allowedTools，否则你会先在设备上按一次键、",
+    "终端里还要再确认一次，变成「批两次」。把审批权完整交给设备，别让两套机制叠加。"
+  ],
+  "_matcher_说明": [
+    "⚠️ matcher 是【整串字面比较】工具名，| 不支持（实测：\"execute_bash|fs_write\" 一次都不触发，",
+    "而 \"execute_bash\" 单独写就正常）。所以每个工具名必须单独一条 hook。",
+    "3.0 文档说 matcher 是 regex 并给了 a|b 的示例，2.16 不是这样。",
+    "",
+    "注意工具的真实名与界面显示名不同：界面写 subagent，真实名是 use_subagent。",
+    "",
+    "必须包含 use_subagent：实测确认【子 agent 的工具调用完全不经过父 agent 的 hook】，",
+    "不拦委派的话，把危险命令丢给子 agent 就绕过了整套审批。",
+    "",
+    "只拦会改东西的：shell 执行、写文件、AWS 调用、委派。",
+    "fs_read / grep / glob 不进来——只读操作没有审批价值，全拦会让 agent 没法用。",
+    "真正的收窄靠 hub 侧 rules.toml：只读命令走 allow 档直接放行，不打扰人。",
+    "",
+    "配完一定要验证 hook 真的触发了：会话输出里应出现 hooks finished；",
+    "更可靠的做法是故意让 hook exit 2，确认操作真被拦住。",
+    "「配了但从未生效」是安全配置最危险的失效模式。"
+  ],
+  "_cache_说明": [
+    "cache_ttl_seconds 保持 0（默认）。它会缓存成功的 hook 结果，",
+    "同一条命令第二次就不问了，审批会被静默跳过。"
+  ],
+  "allowedTools": [
+    "execute_bash",
+    "fs_write",
+    "use_aws",
+    "use_subagent"
+  ],
+  "hooks": {
+    "preToolUse": [
+      {
+        "matcher": "execute_bash",
+        "command": "$HOME/projects/claw-works/kiboard/clients/kiro-cli/hook.sh",
+        "timeout_ms": 180000,
+        "cache_ttl_seconds": 0
+      },
+      {
+        "matcher": "fs_write",
+        "command": "$HOME/projects/claw-works/kiboard/clients/kiro-cli/hook.sh",
+        "timeout_ms": 180000,
+        "cache_ttl_seconds": 0
+      },
+      {
+        "matcher": "use_aws",
+        "command": "$HOME/projects/claw-works/kiboard/clients/kiro-cli/hook.sh",
+        "timeout_ms": 180000,
+        "cache_ttl_seconds": 0
+      },
+      {
+        "matcher": "use_subagent",
+        "command": "$HOME/projects/claw-works/kiboard/clients/kiro-cli/hook.sh",
+        "timeout_ms": 180000,
+        "cache_ttl_seconds": 0
+      }
+    ]
+  }
+}

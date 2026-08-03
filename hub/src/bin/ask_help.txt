@@ -1,0 +1,68 @@
+kiboard-ask —— 把工具调用的审批请求送到 kiboard 实体键盘，等人按键
+
+用法:
+  kiboard-ask --client <kiro-cli|claude-code|raw>
+
+它从 stdin 读客户端钩子喂进来的 JSON，转成统一消息体发给 hub，
+等人在设备上按键，然后用退出码回话：
+
+  0   放行
+  2   阻止（理由写到 stderr，会进 agent 的上下文）
+
+其他用法:
+  kiboard-ask --refresh-rules   手动把 hub 上的规则表拉到本地缓存
+  kiboard-ask --state <名字>    上报 agent 状态，驱动设备的待机显示
+                                合法值：start / working / your_turn / error / idle
+                                建议同时传 --client，否则设备上显示为 [raw]
+  kiboard-ask --version         打印版本（含 git sha），排查客户端与 hub 是否同步
+  kiboard-ask --dump-request    只打印统一消息体就退出，不联网。写新适配器时对字段用；
+                                注意别放进真实 hook（CC 的 stdout 是决策通道）
+
+环境变量 KIBOARD_CC_DECISION（仅 --client claude-code 有效）：
+  passthrough（默认）放行时静默 exit 0，Claude Code 自己的权限提示照旧，
+                     代价是同一条命令问两遍
+  explicit           放行时输出 hookSpecificOutput.permissionDecision=allow，
+                     CC 不再问。此时 kiboard 的 rules.toml 就是唯一放行依据
+                                名字: start | working | your_turn | error | idle
+
+状态上报和审批是两条完全不同的路径:
+  审批  阻塞等人按键，失败时 fail-closed 阻止操作
+  上报  不阻塞、3 秒短超时、【永远 exit 0】
+        一个"看看 agent 在干什么"的功能不能变成新的失败模式——
+        hub 挂了不该让 agent 卡住。
+
+--client 的取值:
+  kiro-cli      按 Kiro CLI 2.16 的 preToolUse 载荷解析
+  claude-code   按 Claude Code 的 PreToolUse 载荷解析
+  raw           stdin 已经是统一消息体，给自定义适配器用
+
+配置 ~/.kiboard/config（权限设 600，别放进 git）:
+  KIBOARD_URL=http://your-hub:26041
+  KIBOARD_API_KEY=...
+  KIBOARD_ON_FAILURE=closed     # closed(默认) | open
+  KIBOARD_TIMEOUT_S=120
+  KIBOARD_RULES_TTL_S=3600      # 本地规则缓存多久刷一次
+
+本地规则缓存:
+  规则表由 hub 维护（中心管理），客户端缓存到 ~/.kiboard/rules.cache.toml。
+  命中 allow 档的命令【本地直接放行、不联网】——只读命令不必为一个 RTT 等公网，
+  hub 挂了也不至于连 git status 都被 fail-closed 拦下。
+  只有真正需要人裁决的才发请求。缓存过期会自动刷新；拉不到就用旧缓存；
+  既没缓存又拉不到则照常走联网审批（那条路会 fail-closed）。
+
+环境变量同名项优先于配置文件。
+
+逃逸阀:
+  touch ~/.kiboard/bypass       # 存在则跳过审批，直接放行
+  rm ~/.kiboard/bypass          # 恢复
+
+失败策略:
+  默认 fail-closed —— 连不上 hub、设备离线、响应异常都会阻止操作。
+  因为上游「非 0/2 退出码 = 警告后照样执行」，若失败时放行，
+  等于 hub 一挂闸门就自动失效。要放宽请显式设 KIBOARD_ON_FAILURE=open。
+
+协议与各客户端接法见 docs/client-protocol.md。
+  kiboard-ask --tasks           从 stdin 读任务清单上报（JSON 数组或 markdown 待办清单，
+                                "- [x]" 算完成、"- [ ]" 算待办、"- " 算进行中）
+                                建议带 --session <id>：hub 按 session 分桶，
+                                不传的话同一 agent 换目录会被当成两个，屏幕上出现重复行

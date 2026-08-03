@@ -1,0 +1,53 @@
+{
+  "_comment": [
+    "把 hooks 段合并进 ~/.claude/settings.json（用户级，所有项目生效）",
+    "或 <项目>/.claude/settings.json（项目级）。不要整文件覆盖。",
+    "⚠️ 未在真实 Claude Code 上实测，首次使用请先跑 README 的「上线前自检」。"
+  ],
+
+  "hooks": {
+    "PreToolUse": [
+      {
+        "_why_matcher": "Bash 是主要风险面；Write/Edit 会改文件；Task 必须包含——子 agent 不继承父 agent 的闸门，漏了它等于留后门（这一点在 kiro-cli 上已实测证实）",
+        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.kiboard/clients/claude-code/hook.sh",
+            "_why_timeout": "要留够人走到设备前按键的时间。必须大于 hub 的 KIBOARD_TIMEOUT_S，否则 hook 先超时，裁决权就不在 kiboard 手里了",
+            "timeout": 180
+          }
+        ]
+      }
+    ],
+
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "$HOME/.kiboard/clients/claude-code/state-hook.sh start", "timeout": 5 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "$HOME/.kiboard/clients/claude-code/state-hook.sh working", "timeout": 5 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          { "type": "command", "command": "$HOME/.kiboard/clients/claude-code/state-hook.sh working", "timeout": 5 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "$HOME/.kiboard/clients/claude-code/state-hook.sh your_turn", "timeout": 5 }
+        ]
+      }
+    ]
+  }
+}
