@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{broadcast, mpsc};
-use tokio_serial::SerialPortBuilderExt;
+use tokio_serial::{SerialPort, SerialPortBuilderExt};
 use tracing::{debug, info, warn};
 
 use crate::approval::Approvals;
@@ -32,8 +32,18 @@ pub async fn run(
             }
         };
         match tokio_serial::new(&port, baud).open_native_async() {
-            Ok(stream) => {
+            Ok(mut stream) => {
                 info!("serial connected: {port}");
+                // 打开端口会让 C3 复位（rst:0x15 USB_UART_CHIP_RESET）。复位后若 DTR/RTS
+                // 仍被拉着，芯片就停在那儿一个字节都不吐——表现为"串口连上了但设备永远离线"。
+                // 实测过：pyserial 里手工 setDTR(False) 就能立刻看到 hello，而 hub 不设就没有。
+                // 这两个信号对 C3 的原生 USB CDC 没有别的用途，一律拉低。
+                if let Err(e) = stream.write_data_terminal_ready(false) {
+                    debug!("clear DTR failed: {e}");
+                }
+                if let Err(e) = stream.write_request_to_send(false) {
+                    debug!("clear RTS failed: {e}");
+                }
                 if let Err(e) = pump(stream, &shared, &mut outbox, &events, &approvals).await {
                     warn!("serial link lost: {e}");
                 }

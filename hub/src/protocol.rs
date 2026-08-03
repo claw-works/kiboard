@@ -33,8 +33,29 @@ pub enum DeviceMsg {
         row: Option<u8>,
         #[serde(default)]
         col: Option<u8>,
+        /// 丝印标签由设备给。hub 不再持有键位表——键位是设备的事，
+        /// 换个方案（触摸屏、手机）根本没有"第 3 号键"这种东西
+        #[serde(default)]
+        label: Option<String>,
         act: KeyAct,
     },
+    /// 设备裁决。**这是审批路径的唯一入口**：设备自己把按键翻成语义，
+    /// hub 不知道人按了哪个键，只知道人的意思。
+    ///
+    /// `id` 为空表示这条裁决不针对具体请求（clear_auto / cancel_all 这类队列控制）。
+    Decision {
+        #[serde(default)]
+        id: Option<u64>,
+        verdict: Verdict,
+        #[serde(default)]
+        confirm: Option<Confirm>,
+    },
+    /// 设备要一屏只有 hub 知道的数据（链路状态、审批历史）。
+    /// 设备不知道这些内容，但它知道人想看什么。
+    Query {
+        what: String,
+    },
+
     Wifi {
         status: String,
         #[serde(default)]
@@ -79,6 +100,57 @@ pub enum KeyAct {
     Release,
 }
 
+/// 设备能表达的裁决。这是**语义**，不是按键——手机 App 上滑动确认发的也是这几个值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    Accept,
+    Reject,
+    /// 接受本次并开启「全部接受」窗口
+    AcceptWindow,
+    /// 取消当前及排队中的全部请求
+    CancelAll,
+    /// 关掉「全部接受」
+    ClearAuto,
+}
+
+/// 强确认的证据。设备报**原始事件**而不是"我确认过了"这个结论：
+///
+/// 阈值留在 hub 才能改配置就生效（不用为一个常量重烧板子），而且 hub 能自己复核。
+/// 这不防被改过的固件——设备在这个模型里是可信的哑终端；它防的是
+/// "阈值散落到各设备实现里，各家判各家的"。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Confirm {
+    pub method: String,
+    #[serde(default)]
+    pub events: Vec<ConfirmEvent>,
+    /// true = 设备自述、hub 无法复核（如手机生物识别）
+    #[serde(default)]
+    pub asserted: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ConfirmEvent {
+    pub ev: String,
+    /// 设备单调时钟毫秒，只用来算差值
+    pub device_ts: u64,
+}
+
+impl Confirm {
+    /// 从原始事件算按住时长。缺 press 或 release 一律算 0 —— 安全方向：
+    /// 证据不全就当没按够，而不是当按够了
+    pub fn held_ms(&self) -> u64 {
+        let ts = |name: &str| {
+            self.events.iter().find(|e| e.ev == name).map(|e| e.device_ts)
+        };
+        match (ts("press"), ts("release")) {
+            (Some(a), Some(b)) if b >= a => b - a,
+            _ => 0,
+        }
+    }
+}
+
+
 /// hub -> 设备
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
@@ -95,6 +167,34 @@ pub enum HostMsg {
     },
     /// 屏幕指令。v4 起用 disp（固件同时兼容旧的 tft）
     Disp(DispOp),
+    /// 待审请求。**hub 只给字段，排版全在设备**——21 字符折行、滚动、分页
+    /// 都是"这块屏多大"决定的事，hub 不该知道。
+    Request(RequestMsg),
+    /// 请求已有结果，设备可以收屏。verdict 只用于设备显示结果条
+    RequestDone { id: u64, verdict: &'static str },
+}
+
+/// 推给设备的待审请求。字段顺序即重要性顺序，设备按自己的屏幕大小取舍。
+#[derive(Debug, Clone, Serialize)]
+pub struct RequestMsg {
+    pub id: u64,
+    /// 逐字原文。**required-to-display**：设备必须显示它，
+    /// 且不得用 summary 取代——措辞良善内容危险的 summary 会让人在错误前提下批准
+    pub verbatim: String,
+    /// agent 自己写的意图说明，可信度最低，挤掉不影响判断
+    pub summary: String,
+    /// 来源短标签 kiro@kiboard
+    pub label: String,
+    /// 客户端简称
+    pub client: String,
+    /// 缩短后的工作目录。同一条命令在不同目录后果完全不同
+    pub cwd: String,
+    pub risk: crate::approval::Risk,
+    /// 高危请求要按住多久。**由 hub 给**，这样改阈值不用重烧固件；
+    /// 设备拿它做本地进度反馈（灯转常亮、提示松手），不必等网络往返
+    pub hold_ms: u64,
+    /// 排队中还有几条，设备可以显示在标题条上
+    pub queued: usize,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -157,13 +257,14 @@ impl HostMsg {
 pub enum HubEvent {
     DeviceUp { fw: String, keys: u8 },
     DeviceDown,
-    Key { id: u8, label: &'static str, row: u8, col: u8, act: KeyAct },
+    Key { id: u8, label: String, row: u8, col: u8, act: KeyAct },
     Wifi { status: String, ssid: Option<String>, rssi: Option<i32> },
     Mode { name: String },
     /// 新的审批请求已展示到设备上
     Request { id: u64, title: String, detail: String, risk: crate::approval::Risk },
-    /// 请求有了结果
-    Decision { id: u64, decision: Decision, key: Option<u8> },
+    /// 请求有了结果。`by` 是裁决来源（device / api），不再是键号——
+    /// 键号只有物理键盘才有，手机方案上没有这个概念
+    Decision { id: u64, decision: Decision, by: Option<&'static str> },
     /// 自动裁决状态变化
     Auto { mode: &'static str, remaining_s: u64 },
     Log { text: String },

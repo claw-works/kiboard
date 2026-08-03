@@ -11,7 +11,6 @@ pub mod audit;
 pub mod auth;
 pub mod config;
 pub mod device;
-pub mod keymap;
 pub mod protocol;
 pub mod rules;
 pub mod serial;

@@ -25,7 +25,8 @@ pub struct Entry {
     pub rule: String,
     pub decision: String,
     /// 按了哪个键的丝印标签；自动或 API 裁决时为空
-    pub key: Option<String>,
+    /// 裁决来源：设备标签 / api。以前记的是键号，但键号只有物理键盘才有
+    pub by: Option<String>,
     pub elapsed_ms: u64,
 }
 
@@ -173,7 +174,7 @@ mod tests {
             risk: "normal".into(),
             rule: "default".into(),
             decision: decision.into(),
-            key: None,
+            by: None,
             elapsed_ms: 1,
         };
         let _ = std::fs::remove_file(&path);

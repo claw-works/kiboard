@@ -107,6 +107,12 @@
         "client": { "$ref": "#/$defs/clientRef" },
         "risk": { "$ref": "#/$defs/risk" },
         "confirm_required": { "$ref": "#/$defs/confirmMethod" },
+        "hold_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "高危请求要按住多久。由 hub 给，设备拿它做本地进度反馈（到点转常亮/提示松手），不必等网络往返；判定仍由 hub 复核。注意设备上报的时长有下限：c3-keypad 的去抖冷却是 250ms，阈值定在这个量级以下没有意义。"
+        },
+        "queued": { "type": "integer", "minimum": 0, "description": "排队中还有几条" },
         "rule": { "type": ["string", "null"], "description": "命中的规则名，供人判断依据；null 表示走默认档" },
         "expires_at": { "type": "string", "format": "date-time" }
       },
@@ -121,8 +127,8 @@
         "id": { "type": "string", "description": "必须对应某条 request。已过期或不存在的 id 一律丢弃并记审计。" },
         "verdict": {
           "type": "string",
-          "enum": ["accept", "reject", "accept_window", "cancel_all"],
-          "description": "accept_window=开启「全部接受」窗口（不覆盖 high 档）；cancel_all=清空待审队列。"
+          "enum": ["accept", "reject", "accept_window", "cancel_all", "clear_auto"],
+          "description": "accept_window=开启「全部接受」窗口（不覆盖 high 档，实测保证）；cancel_all=清空待审队列；clear_auto=关掉「全部接受」——一个只能开不能关的自动批准是陷阱。后两个与具体请求无关，可以不带 id。"
         },
         "confirm": {
           "type": "object",
@@ -151,8 +157,18 @@
           "additionalProperties": false
         }
       },
-      "required": ["t", "id", "verdict"],
-      "additionalProperties": false
+      "required": ["t", "verdict"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "$comment": "针对具体请求的裁决必须带 id——这是重放防护：一条隔夜的 accept 不能落到新请求上。队列控制（cancel_all / clear_auto）与具体请求无关，可以不带。",
+          "if": {
+            "properties": { "verdict": { "enum": ["accept", "reject", "accept_window"] } },
+            "required": ["verdict"]
+          },
+          "then": { "required": ["id"] }
+        }
+      ]
     },
     "verdict": {
       "type": "object",

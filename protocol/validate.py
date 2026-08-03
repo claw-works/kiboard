@@ -43,6 +43,8 @@ VALID: list[dict[str, Any]] = [
         "client": {"name": "kiro-cli", "enforcement": "block", "cwd": "/x/kiboard"},
         "risk": "high",
         "confirm_required": "hold",
+        "hold_ms": 900,
+        "queued": 2,
         "rule": "递归删除",
         "expires_at": "2026-08-03T12:02:00Z",
     },
@@ -80,6 +82,9 @@ VALID: list[dict[str, Any]] = [
         "verdict": "accept",
         "confirm": {"method": "biometric", "asserted": True},
     },
+    # 队列控制与具体请求无关，可以不带 id
+    {"t": "decision", "verdict": "clear_auto"},
+    {"t": "decision", "verdict": "cancel_all"},
 ]
 
 # 故意写坏的样例：(说明, 载荷)。每条都必须被拦下。
@@ -87,8 +92,10 @@ INVALID: list[tuple[str, dict[str, Any]]] = [
     ("request 缺 verbatim —— 逐字原文是必显字段，缺了设备就只能显示 summary",
      {"t": "request", "id": "r_2", "tool": "execute_bash", "risk": "high",
       "expires_at": "2026-08-03T12:02:00Z"}),
-    ("decision 缺 id —— 没有 id 就无法绑定请求，隔夜的 accept 能落到新请求上",
+    ("accept 缺 id —— 没有 id 就无法绑定请求，隔夜的 accept 能落到新请求上",
      {"t": "decision", "verdict": "accept"}),
+    ("reject 缺 id —— 同理，裁决必须绑定到具体请求",
+     {"t": "decision", "verdict": "reject"}),
     ("hello 的 caps 缺 render —— hub 不知道该不该代为排版",
      {"t": "hello", "protocol_version": "1.0",
       "device": {"id": "d", "kind": "mobile"}, "caps": {}}),

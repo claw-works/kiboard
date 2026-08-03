@@ -149,6 +149,36 @@ static char gTasks[display::MAX_TASKS][40];
 static int gTaskCount = 0;
 static int gTaskTotal = 0;
 
+// ---------- 待审请求 ----------
+//
+// hub 只给字段（{"t":"request","verbatim":...,"risk":...,"hold_ms":...}），
+// **排版全在这里**：屏幕多宽、怎么折行、滚到第几行，只有设备知道。
+// 以前是 hub 拼好字符串下发，那意味着 hub 里写着 21 字符和 4 行这种常数——
+// 换一块屏或换个设备方案就得改 hub。
+//
+// 键位映射同理：hub 不知道"第 0 号键"，它只收到 accept / reject 这样的语义。
+static bool gReqActive = false;
+static uint32_t gReqId = 0;
+static char gReqVerbatim[192];  // 逐字原文，required-to-display
+static char gReqSummary[96];    // agent 自己写的意图，可信度最低，挤掉不影响判断
+static char gReqLabel[24];
+static char gReqClient[16];
+static char gReqCwd[48];
+static bool gReqHigh = false;
+static uint32_t gReqHoldMs = 0;
+static int gReqQueued = 0;
+static int gReqScroll = 0;      // 滚动位置，本地持有
+static int gReqTotalLines = 0;  // 折行后的总行数，夹住滚动范围
+
+// 高危长按：本地做进度反馈（不等网络往返），原始时间戳随裁决报给 hub 复核。
+// 阈值是 hub 给的（gReqHoldMs），所以改阈值不用重烧固件。
+static uint32_t gHoldStart = 0;
+static bool gHoldReady = false;
+
+// 丝印标签。hub 不再持有键位表，标签随按键事件一起上报，只为日志和 WS 订阅者可读
+static const char *KEY_LABELS[16] = {"1", "2", "3", "A", "4", "5", "6", "B",
+                                     "7", "8", "9", "C", "*", "0", "#", "D"};
+
 // hub 在 hello 的回执里告诉设备自己的版本，显示在 logo 页。
 // 目的和 /health 带版本一样：一眼看出设备连的 hub 是哪一版，不用猜
 static char gHubVersion[24] = "";
@@ -309,6 +339,16 @@ static void sendHello() {
     doc["leds"] = LED_COUNT;
     doc["disp"] = "ssd1306-128x64";
     doc["ip"] = WiFi.localIP().toString();
+    // 能力声明。render=self 表示"排版我自己来，别给我拼好的字符串"。
+    // 如实声明是硬要求：声明做不到的能力，后果是 hub 把它不能安全处理的请求推过来
+    JsonObject caps = doc["caps"].to<JsonObject>();
+    caps["render"] = "self";
+    caps["input"] = "matrix16";
+    JsonArray confirm = caps["confirm"].to<JsonArray>();
+    confirm.add("tap");
+    confirm.add("hold");
+    // 按住时长由 hub 依据原始 press/release 事件复核，不是设备自己说了算
+    caps["confirm_verifiable"] = true;
     sendJson(doc);
 }
 
@@ -318,6 +358,7 @@ static void sendKeyEvent(size_t id, const char *act) {
     doc["id"] = static_cast<int>(id);
     doc["row"] = static_cast<int>(id / 4) + 1;
     doc["col"] = static_cast<int>(id % 4) + 1;
+    doc["label"] = KEY_LABELS[id];
     doc["act"] = act;
     sendJson(doc);
 
@@ -330,6 +371,82 @@ static void sendKeyEvent(size_t id, const char *act) {
                                                           : display::Style::Normal);
     }
 }
+
+// ---------- 审批：语义裁决 ----------
+//
+// 设备发的是**人的意思**，不是按键。hub 因此不需要知道这块板子有几个键、
+// 哪个键在哪——换成触摸屏或手机 App，发的还是这几个值。
+static void sendDecision(const char *verdict, bool withHold = false) {
+    JsonDocument doc;
+    doc["t"] = "decision";
+    if (gReqActive) doc["id"] = gReqId;  // 绑定请求：隔夜的 accept 不能落到新请求上
+    doc["verdict"] = verdict;
+    if (withHold && gHoldStart != 0) {
+        // 报原始事件而不是"我确认过了"这个结论：阈值和判定都留在 hub，
+        // 这样改阈值只要改配置，而且不会各设备实现各判一套
+        JsonObject c = doc["confirm"].to<JsonObject>();
+        c["method"] = "hold";
+        JsonArray evs = c["events"].to<JsonArray>();
+        JsonObject p = evs.add<JsonObject>();
+        p["ev"] = "press";
+        p["device_ts"] = gHoldStart;
+        JsonObject r = evs.add<JsonObject>();
+        r["ev"] = "release";
+        r["device_ts"] = millis();
+    }
+    sendJson(doc);
+}
+
+// 要一屏只有 hub 知道的数据（链路状态、审批历史）。
+// 设备不知道内容，但它知道人想看什么
+static void sendQuery(const char *what) {
+    JsonDocument doc;
+    doc["t"] = "query";
+    doc["what"] = what;
+    sendJson(doc);
+}
+
+// 画审批界面。**verbatim 必须显示**：它是真正会执行的东西；
+// summary 是 agent 自己写的，措辞良善内容危险的 summary 会让人在错误前提下批准，
+// 所以它只能排在后面，绝不能单独出现。
+static void drawRequest() {
+    if (!gReqActive) return;
+
+    // 标题条：真正会变的信息只有"短按还是按住"。队列深度和来源跟在后面，
+    // 放不下就被截断——那两个是参考信息，缺了不影响判断
+    char head[28];
+    if (gReqHigh) {
+        snprintf(head, sizeof(head), "!! HOLD1 %.1fs", gReqHoldMs / 1000.0);
+    } else {
+        snprintf(head, sizeof(head), "APPROVE?");
+    }
+    if (gReqQueued > 0) {
+        size_t n = strlen(head);
+        snprintf(head + n, sizeof(head) - n, " +%d", gReqQueued);
+    }
+    if (gReqClient[0] != '\0') {
+        size_t n = strlen(head);
+        snprintf(head + n, sizeof(head) - n, " %s", gReqClient);
+    }
+
+    // 正文空间按重要性分配：
+    //   命令 —— 必须完整看到（放不下就靠 A/B 滚动，不能静默截断）
+    //   目录 —— 同一条命令在不同目录后果完全不同，高危时是判断的必要信息
+    //   说明 —— 模型自己写的，最不可信，排最后
+    char body[320];
+    if (gReqHigh) {
+        // 高危给目录单独一行；来源已经在标题条里，正文不再重复
+        snprintf(body, sizeof(body), "%s%s%s%s%s", gReqVerbatim,
+                 gReqCwd[0] ? "\n@" : "", gReqCwd[0] ? gReqCwd : "",
+                 gReqSummary[0] ? "\n" : "", gReqSummary[0] ? gReqSummary : "");
+    } else {
+        snprintf(body, sizeof(body), "%s%s%s%s%s%s", gReqLabel[0] ? "[" : "",
+                 gReqLabel[0] ? gReqLabel : "", gReqLabel[0] ? "] " : "", gReqVerbatim,
+                 gReqSummary[0] ? " " : "", gReqSummary[0] ? gReqSummary : "");
+    }
+    gReqTotalLines = display::statusScreen(head, body, display::Style::Highlight, gReqScroll);
+}
+
 
 static void applyLed(const Led &led, bool lit) {
     digitalWrite(led.pin, lit != led.activeLow ? HIGH : LOW);
@@ -469,6 +586,55 @@ static void handleLine(const char *line) {
     if (type == nullptr) return;
     gLastHubCmdMs = millis();  // 收到任何一条 hub 指令都算 hub 在线
 
+    if (strcmp(type, "request") == 0) {
+        // 待审请求：只有字段，排版在本地
+        gReqActive = true;
+        gReqId = doc["id"] | 0;
+        snprintf(gReqVerbatim, sizeof(gReqVerbatim), "%s", doc["verbatim"] | "");
+        snprintf(gReqSummary, sizeof(gReqSummary), "%s", doc["summary"] | "");
+        snprintf(gReqLabel, sizeof(gReqLabel), "%s", doc["label"] | "");
+        snprintf(gReqClient, sizeof(gReqClient), "%s", doc["client"] | "");
+        snprintf(gReqCwd, sizeof(gReqCwd), "%s", doc["cwd"] | "");
+        gReqHigh = strcmp(doc["risk"] | "normal", "high") == 0;
+        gReqHoldMs = doc["hold_ms"] | 0;
+        gReqQueued = doc["queued"] | 0;
+        gReqScroll = 0;
+        gHoldStart = 0;
+        gHoldReady = false;
+        gFullscreenTransient = false;  // 审批屏不可退：* 不能把一条等着裁决的请求顶掉
+        // 审批请求必须看得见：哪怕用户刚主动熄了屏也要点亮。
+        // "请求在等、屏幕全黑"是这个产品最不能有的状态
+        lightOn();
+        noteActivity();
+        drawRequest();
+        JsonDocument out;
+        out["t"] = "disp";
+        out["op"] = "request";
+        out["lines"] = gReqTotalLines;
+        sendJson(out);
+        return;
+    }
+    if (strcmp(type, "request_done") == 0) {
+        // 请求有了结果。**文案在设备侧**——怎么写、要不要反色是这块屏的事
+        gReqActive = false;
+        gHoldStart = 0;
+        gHoldReady = false;
+        const char *v = doc["verdict"] | "";
+        const char *text = "DONE";
+        if (strcmp(v, "accept") == 0) text = "ACCEPTED";
+        else if (strcmp(v, "reject") == 0) text = "REJECTED";
+        else if (strcmp(v, "auto_accept") == 0) text = "AUTO ACCEPTED";
+        else if (strcmp(v, "rule_allow") == 0) text = "ALLOWED BY RULE";
+        else if (strcmp(v, "timeout") == 0) text = "TIMED OUT";
+        else if (strcmp(v, "cancelled") == 0) text = "CANCELLED";
+        display::leaveFullscreen();
+        gHomeDirty = true;
+        display::hubMessage(text, display::Style::Normal);
+        gHubBodyUntilMs = millis() + HUB_BODY_HOLD_MS;
+        noteActivity();
+        return;
+    }
+
     if (strcmp(type, "ping") == 0) {
         JsonDocument out;
         out["t"] = "pong";
@@ -534,6 +700,119 @@ static void handleLine(const char *line) {
     }
 }
 
+// 一次按下的本地处理。返回 true 表示这个键已经处理完、不再往 hub 发按键事件。
+//
+// 键位表在这里，不在 hub。分工原则是**数据在谁手里**：
+//   本地数据（页码、滚动位置、任务列表、有没有待批请求）→ 固件自己判，按下即出
+//   只有 hub 知道的（审批历史、链路状态、自动接受窗口）→ 发语义消息问 hub
+static bool handleKeyLocally(size_t id) {
+    // ---------- 审批界面上的键 ----------
+    if (gReqActive) {
+        switch (id) {
+            case 0:  // 1 = 接受。高危走长按，由调用方处理（要记 press 时刻）
+                if (!gReqHigh) {
+                    sendDecision("accept");
+                    return true;
+                }
+                return false;
+            case 1:  // 2 = 拒绝。安全方向，不设门槛
+                sendDecision("reject");
+                return true;
+            case 2:  // 3 = 全部接受
+                sendDecision("accept_window");
+                return true;
+            case 3:    // A = 正文上滚
+            case 7: {  // B = 正文下滚
+                // 滚动完全本地：滚到第几行是这块屏的状态，hub 不需要知道。
+                // 往下滚到底就不动，避免滚出一屏空白让人以为内容没了
+                int maxSkip = gReqTotalLines - 4;
+                if (maxSkip < 0) maxSkip = 0;
+                int want = (id == 3) ? gReqScroll - 1 : gReqScroll + 1;
+                if (want < 0) want = 0;
+                if (want > maxSkip) want = maxSkip;
+                if (want != gReqScroll) {
+                    gReqScroll = want;
+                    drawRequest();
+                }
+                return true;
+            }
+            case 11:  // C = 取消全部
+                sendDecision("cancel_all");
+                return true;
+            case 15:  // D = 关掉「全部接受」
+                sendDecision("clear_auto");
+                return true;
+            default:
+                break;
+        }
+    }
+
+    // ---------- 待机时的键 ----------
+    // * = 退一层 / 熄屏。全在本地判断，见 starKey 的注释
+    if (id == 12) {
+        starKey();
+        return true;
+    }
+    // 4 = 任务屏。数据已在设备上，本地画、按下即出，不等网络往返。
+    // 再按一次收起——同一个键开合，比"按 4 开、按别的关"好记
+    if (!display::fullscreenActive() && id == 4) {
+        gTasksViewUntilMs = (gTasksViewUntilMs != 0) ? 0 : millis() + TASKS_VIEW_MS;
+        gHomeDirty = true;
+        return true;
+    }
+    // A/B = 首屏翻页。刻意不发给 hub：翻页是设备自己的功能，
+    // 正确性不该取决于 hub 版本，而且 hub 离线时更需要能翻到帮助页
+    if (!display::fullscreenActive() && (id == 3 || id == 7)) {
+        gTasksViewUntilMs = 0;  // 停在任务屏上时先收起，否则翻了看不见
+        gHomePage = (id == 3) ? (gHomePage + display::HOME_PAGES - 1) % display::HOME_PAGES
+                              : (gHomePage + 1) % display::HOME_PAGES;
+        gHomeDirty = true;
+        return true;
+    }
+    // 只有 hub 知道的三屏：审批历史、上次详情、链路状态
+    if (id == 5) {
+        sendQuery("recent");
+        return true;
+    }
+    if (id == 6) {
+        sendQuery("last");
+        return true;
+    }
+    if (id == 13) {
+        sendQuery("info");
+        return true;
+    }
+    // 队列控制与请求无关，空闲时也要能用（自动接受窗口是 hub 的状态）
+    if (id == 11) {
+        sendDecision("cancel_all");
+        return true;
+    }
+    if (id == 15) {
+        sendDecision("clear_auto");
+        return true;
+    }
+    // 没有待批请求时按裁决键：本地就知道答案，不必问 hub
+    if (id == 0 || id == 1 || id == 2) {
+        display::hubMessage("no request", display::Style::Normal);
+        gHubBodyUntilMs = millis() + HUB_BODY_HOLD_MS;
+        return true;
+    }
+    return false;  // 7/8/9/# 没绑动作，照常上报 key 事件供诊断
+}
+
+// 高危长按到点了：灯转常亮 + 提示松手即生效。
+//
+// 这段反馈以前要等 hub 往返（固件发 long、hub 算时间、再下发提示），
+// 现在本地做——阈值是 hub 在 request 里给的，所以既即时又不用重烧固件改阈值。
+static void updateHold() {
+    if (gHoldStart == 0 || gHoldReady || gReqHoldMs == 0) return;
+    if (millis() - gHoldStart < gReqHoldMs) return;
+    gHoldReady = true;
+    leds[0].mode = 1;  // 常亮
+    display::hubMessage("release to accept", display::Style::Highlight);
+    gHubBodyUntilMs = millis() + HUB_BODY_HOLD_MS;
+}
+
 static void scanKeys() {
     uint32_t now = millis();
     for (size_t r = 0; r < 4; r++) {
@@ -564,37 +843,24 @@ static void scanKeys() {
                     }
                     ks.swallow = false;
                     noteActivity();
-                    // 首屏状态下 A/B 是翻页，由固件独占：翻完【不】把事件发给 hub。
+                    // ---------- 键位映射：全在设备侧 ----------
                     //
-                    // 一开始是"翻页 + 照常上报"，实测出问题：hub 空闲时收到 A/B 会回一句
-                    // no request，那条消息正好盖住刚翻出来的页面。修 hub 当然能治，
-                    // 但首屏翻页是固件自己的功能，正确性不该取决于 hub 版本——
-                    // hub 是分开部署的，而且离线时更需要能翻到帮助页。
-                    // 所以在这里就吞掉，配旧 hub 也对。
-                    // * = 退一层 / 熄屏。全在固件本地判断，见 starKey 的注释
-                    if (id == 12) {
-                        starKey();
-                        ks.swallow = true;
-                        continue;
-                    }
-                    // 4 = 任务屏。数据已在设备上，本地画、按下即出，不发给 hub。
-                    // 再按一次收起——同一个键开合，比"按 4 开、按别的关"好记
-                    if (!display::fullscreenActive() && id == 4) {
-                        gTasksViewUntilMs =
-                            (gTasksViewUntilMs != 0) ? 0 : millis() + TASKS_VIEW_MS;
-                        gHomeDirty = true;
-                        ks.swallow = true;
-                        continue;
-                    }
-                    // A/B 翻页时若正停在任务屏上，先把它收起，否则翻了看不见
-                    if (!display::fullscreenActive() && (id == 3 || id == 7)) {
-                        gTasksViewUntilMs = 0;
-                        gHomePage = (id == 3)
-                                        ? (gHomePage + display::HOME_PAGES - 1) %
-                                              display::HOME_PAGES
-                                        : (gHomePage + 1) % display::HOME_PAGES;
-                        gHomeDirty = true;
+                    // hub 收到的是 accept / reject 这样的语义，不是键号。这么分的理由：
+                    // 键位是"这块板子长什么样"决定的，换成触摸屏或手机根本没有键号；
+                    // 而且能本地判断的就别绕一圈网络（滚动、翻页、没有请求时的提示）。
+                    if (handleKeyLocally(id)) {
                         ks.swallow = true;  // 连同 long/release 一起吞，别让 hub 收到半截事件
+                        continue;
+                    }
+                    // 高危长按的 press 不立刻上报：release 时才带着真实时长一起发。
+                    // 计时起点记在这里
+                    if (gReqActive && gReqHigh && id == 0) {
+                        gHoldStart = now;
+                        gHoldReady = false;
+                        char buf[32];
+                        snprintf(buf, sizeof(buf), "hold %.1fs to accept", gReqHoldMs / 1000.0);
+                        display::hubMessage(buf, display::Style::Highlight);
+                        gHubBodyUntilMs = millis() + HUB_BODY_HOLD_MS;
                         continue;
                     }
                     sendKeyEvent(id, "press");
@@ -605,13 +871,23 @@ static void scanKeys() {
                         ks.swallow = false;
                         continue;
                     }
+                    // 高危长按松手：带上原始 press/release 时间戳，由 hub 复核够不够
+                    if (gReqActive && gReqHigh && id == 0 && gHoldStart != 0) {
+                        sendDecision("accept", true);
+                        gHoldStart = 0;
+                        gHoldReady = false;
+                        continue;
+                    }
                     sendKeyEvent(id, "release");
                 }
             }
             if (ks.stable && !ks.swallow && !ks.longSent &&
                 now - ks.pressAt >= LONG_PRESS_MS) {
                 ks.longSent = true;
-                sendKeyEvent(id, "long");
+                // long 不再发给 hub：高危门槛靠 release 时的真实时长判定，
+                // 而 600ms 的 long 对人手区分不开"点一下"和"按住"（实测踩过）。
+                // 这里只留给本地回显用
+                if (!gReqActive) sendKeyEvent(id, "long");
             }
         }
     }
@@ -678,6 +954,7 @@ void loop() {
         sendWifiStatus();
     }
     scanKeys();
+    updateHold();
     updateLeds();
     updateWifi();
     updateHome();

@@ -3,7 +3,6 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 use crate::approval::Approvals;
-use crate::keymap;
 use crate::protocol::{DeviceMsg, HubEvent};
 use crate::state::{Shared, Transport};
 
@@ -53,17 +52,23 @@ pub async fn handle_line(
             }
             shared.note_pong(uptime_ms).await;
         }
-        Ok(DeviceMsg::Key { id, row, col, act }) => {
+        Ok(DeviceMsg::Key { id, row, col, label, act }) => {
             let row = row.unwrap_or(id / 4 + 1);
             let col = col.unwrap_or(id % 4 + 1);
-            let label = keymap::label(id);
-            let action = keymap::action(id);
-            info!("key {id} [{label}] R{row}C{col} {act:?} -> {action:?}");
-            shared.note_key(id, act).await;
+            // 标签由设备给。hub 不再有键位表——它只是把事件透出去给 WS 订阅者看，
+            // 审批语义走 Decision 那条路
+            let label = label.unwrap_or_else(|| format!("id{id}"));
+            debug!("key {id} [{label}] R{row}C{col} {act:?}");
+            shared.note_key(id, label.clone(), act).await;
             let _ = events.send(HubEvent::Key { id, label, row, col, act });
-
-            // 三种都要传进去：高危请求的按住时长由 hub 从 press 到 release 计时
-            approvals.on_action(action, id, act).await;
+        }
+        Ok(DeviceMsg::Decision { id, verdict, confirm }) => {
+            info!("decision from device: {verdict:?} for {id:?}");
+            approvals.on_decision(id, verdict, confirm).await;
+        }
+        Ok(DeviceMsg::Query { what }) => {
+            debug!("query from device: {what}");
+            approvals.on_query(&what).await;
         }
         Ok(DeviceMsg::Wifi { status, ssid, ip, rssi, reason }) => {
             info!("wifi {status} ssid={ssid:?} ip={ip:?} rssi={rssi:?} reason={reason:?}");
@@ -78,10 +83,8 @@ pub async fn handle_line(
         }
         Ok(DeviceMsg::Ok { cmd }) => debug!("device ok: {cmd}"),
         Ok(DeviceMsg::Disp { op, lines }) => {
-            // status 的回执带折行总行数，滚动范围要靠它来夹
-            if let Some(n) = lines {
-                approvals.note_total_lines(n as usize).await;
-            }
+            // 折行总行数以前是 hub 用来夹滚动范围的。滚动现在完全在设备侧，
+            // 这个回执只留作调试信息
             debug!("device disp ok: {op} lines={lines:?}");
         }
         Ok(DeviceMsg::Err { msg }) => warn!("device err: {msg}"),

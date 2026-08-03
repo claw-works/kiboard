@@ -38,7 +38,7 @@ struct Inner {
     wifi_ssid: Option<String>,
     wifi_rssi: Option<i32>,
     mode: Mode,
-    last_key: Option<(u8, KeyAct)>,
+    last_key: Option<(u8, String, KeyAct)>,
     keys_total: u8,
     started: Instant,
     /// 无线链路出口，设备 WS 连上时注册；带 id 以防后来者清掉别人的注册
@@ -76,7 +76,8 @@ pub struct StatusView {
 #[derive(Debug, Serialize)]
 pub struct LastKey {
     pub id: u8,
-    pub label: &'static str,
+    /// 丝印标签由设备上报。hub 不持有键位表
+    pub label: String,
     pub row: u8,
     pub col: u8,
     pub act: KeyAct,
@@ -185,8 +186,8 @@ impl Shared {
         self.inner.lock().await.uptime_ms = uptime_ms;
     }
 
-    pub async fn note_key(&self, id: u8, act: KeyAct) {
-        self.inner.lock().await.last_key = Some((id, act));
+    pub async fn note_key(&self, id: u8, label: String, act: KeyAct) {
+        self.inner.lock().await.last_key = Some((id, label, act));
     }
 
     pub async fn set_wifi(&self, status: String, ssid: Option<String>, rssi: Option<i32>) {
@@ -216,9 +217,9 @@ impl Shared {
             wifi_rssi: g.wifi_rssi,
             mode: g.mode,
             keys_total: g.keys_total,
-            last_key: g.last_key.map(|(id, act)| LastKey {
+            last_key: g.last_key.clone().map(|(id, label, act)| LastKey {
                 id,
-                label: crate::keymap::label(id),
+                label,
                 row: id / 4 + 1,
                 col: id % 4 + 1,
                 act,

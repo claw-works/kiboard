@@ -7,7 +7,7 @@
 //!   POST /cancel    取消当前及排队中的全部请求
 //!   GET/POST /auto  查询 / 清除「全部接受」状态
 //!
-//! 给调试用的：/status /msg /led /keymap
+//! 给调试用的：/status /msg /led
 //! 链路：/device 设备接入（需 token）、/ws 客户端订阅事件
 use std::collections::HashMap;
 use std::time::Duration;
@@ -27,7 +27,6 @@ use crate::agentstate::{self, Current, StateReport};
 use crate::approval::{Approvals, Decision, Risk};
 use crate::audit::{self, Audit};
 use crate::device;
-use crate::keymap;
 use crate::protocol::{DispOp, HostMsg, HubEvent, LedMode};
 use crate::rules::{Rules, Verdict};
 use crate::state::{Shared, Transport};
@@ -61,7 +60,6 @@ pub fn router(state: AppState, api_key: Option<String>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/status", get(status))
-        .route("/keymap", get(keymap_view))
         .route("/rules", get(rules_view))
         .route("/state", get(state_get).post(state_post))
         .route("/tasks", get(tasks_get).post(tasks_post))
@@ -102,20 +100,6 @@ async fn status(State(st): State<AppState>) -> impl IntoResponse {
     }))
 }
 
-async fn keymap_view() -> impl IntoResponse {
-    let keys: Vec<_> = (0u8..16)
-        .map(|id| {
-            json!({
-                "id": id,
-                "label": keymap::label(id),
-                "row": id / 4 + 1,
-                "col": id % 4 + 1,
-                "action": keymap::action(id),
-            })
-        })
-        .collect();
-    Json(json!({"keys": keys}))
-}
 
 /// 把规则表原文下发给客户端做本地缓存。
 ///
@@ -328,7 +312,7 @@ async fn approve(
         None => (verdict, rule),
     };
 
-    let write_audit = |id: u64, risk: &str, decision: Decision, key: Option<&'static str>| {
+    let write_audit = |id: u64, risk: &str, decision: Decision, by: Option<String>| {
         st.audit.write(&audit::Entry {
             ts: audit::now_rfc3339(),
             id,
@@ -342,7 +326,7 @@ async fn approve(
             risk: risk.to_string(),
             rule: rule.clone(),
             decision: format!("{decision:?}").to_lowercase(),
-            key: key.map(str::to_string),
+            by,
             elapsed_ms: started.elapsed().as_millis() as u64,
         });
     };
@@ -396,7 +380,7 @@ async fn approve(
     );
     // 屏幕一行 21 个 ASCII，前缀 @ 占 1 个，剩 20 个给路径
     let cwd_short = req.source.cwd_short(20);
-    let (id, decision) = st
+    let (id, decision, by) = st
         .approvals
         .request(crate::approval::RequestSpec {
             title,
@@ -409,9 +393,9 @@ async fn approve(
         })
         .await;
 
-    let key = st.shared.status().await.last_key.map(|k| k.label);
-    let key = if matches!(decision, Decision::Accept | Decision::Reject) { key } else { None };
-    write_audit(id, risk_name, decision, key);
+    // 裁决来源由裁决本身带回来（device / api），不再去问"最后一次按键是哪个"——
+    // 设备自己翻译语义之后就没有按键事件了，而手机方案上根本没有键号这个概念
+    write_audit(id, risk_name, decision, by.map(str::to_string));
 
     (
         StatusCode::OK,
@@ -420,7 +404,7 @@ async fn approve(
             id,
             decision,
             approved: decision.approved(),
-            reason: reason_for(decision, key),
+            reason: reason_for(decision, by),
             risk: risk_name.into(),
             rule,
         }),
@@ -429,15 +413,15 @@ async fn approve(
 
 /// 拒绝时这段话会被客户端写到 stderr，进而进入 agent 的上下文。
 /// 所以要写得让 agent 知道「被人拒了、该换方案」，而不是一句无信息的 denied。
-fn reason_for(decision: Decision, key: Option<&'static str>) -> String {
+fn reason_for(decision: Decision, by: Option<&str>) -> String {
     match decision {
-        Decision::Accept => format!("approved on kiboard (key {})", key.unwrap_or("?")),
+        Decision::Accept => format!("approved on kiboard ({})", by.unwrap_or("hub api")),
         Decision::AutoAccept => "auto-approved: kiboard is in accept-all window".into(),
         Decision::RuleAllow => "allowed by rule".into(),
         Decision::Reject => format!(
-            "rejected by the user on kiboard (key {}). Do not retry the same action; \
+            "rejected by the user on kiboard ({}). Do not retry the same action; \
              ask the user what to do instead or propose a different approach.",
-            key.unwrap_or("?")
+            by.unwrap_or("hub api")
         ),
         Decision::Timeout => {
             "no response on kiboard before timeout. The user may be away; do not retry \
