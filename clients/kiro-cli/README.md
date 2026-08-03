@@ -67,7 +67,7 @@ agent 由此知道"被人拒了、为什么"，可以换方案而不是傻等或
 ## 四个必须知道的配置项
 
 **`timeout_ms` 必须设得比 hub 的超时更长。** 实测确认：**hook 超时是 fail-open —— 超时后
-工具照样执行**（见 [docs/kiro-hook-findings.md](../../docs/kiro-hook-findings.md) 第 2 条）。
+工具照样执行**（见 [hook-findings.md](hook-findings.md) 第 2 条）。
 默认 `timeout_ms` 只有 30 秒，等人按键根本不够，不改就会常态性地静默放行。
 设成 `180000`，让 hub 的 120s 先到、返回 `decision=timeout`，由 `kiboard-ask` 主动 `exit 2`。
 
@@ -104,7 +104,7 @@ rm ~/.kiboard/bypass
 
 ## 实测结论
 
-文档没写明的几件事已经跑过一遍，见 [docs/kiro-hook-findings.md](../../docs/kiro-hook-findings.md)：
+文档没写明的几件事已经跑过一遍，见 [hook-findings.md](hook-findings.md)：
 
 | 结论 | 影响 |
 |---|---|

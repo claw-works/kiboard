@@ -2,7 +2,7 @@
 
 > **版本说明**：本文的选型理由、Wi-Fi 降功率、供电、USB HID 约束等内容对 v1~v4 都适用。
 > 但**引脚分配、屏幕与按键接线**已在 v4 全部改变（ST7735 SPI 彩屏 + 5 独立按键
-> → SSD1306 I2C OLED + 4×4 矩阵键盘）。**引脚分配以 [docs/pinmap.md](pinmap.md) 为准**，
+> → SSD1306 I2C OLED + 4×4 矩阵键盘）。**引脚分配以 [pinmap.md](pinmap.md) 为准**，
 > 本文中标注「v1 历史」的小节仅作记录。
 
 ## 方案概述
@@ -96,7 +96,7 @@ GPIO   0=0  1=0  2=1  3=0  6=0  7=0  8=1  9=1  10=0  20=0  21=0
 
 所以：**三个脏引脚正好给三个 LED（输出），八个干净引脚正好给矩阵的 8 根线。**
 这个分配是被硬件逼出来的，不是随手排的——把矩阵行放在 GPIO2 上会出现极难定位的
-边界电压故障，详见 [docs/pinmap.md](pinmap.md)。
+边界电压故障，详见 [pinmap.md](pinmap.md)。
 
 ---
 
@@ -324,5 +324,5 @@ pkill -f kiboard-hub
 - **背光调节**：加三极管驱动 BLK，实现软件调光 / 息屏
 - **更多 LED**：现有一盒 LED 可做状态指示阵列，数量多时需外接电源
 - **外壳与固定**：屏幕板 30×24mm、四角有 M2 级安装孔；确定最终摆放角度后 `ROTATION` 常量对应调整
-- **载板 PCB**：`hardware/kiboard/` 下的 KiCad 载板设计（用 Konnect MCP 生成），
-  SuperMini 排母 + OLED I2C 接口 + 4x4 矩阵键盘接口 + LED，详见 `hardware/kiboard/BOM.md`
+- **载板 PCB**：`../hardware/kiboard/` 下的 KiCad 载板设计（用 Konnect MCP 生成），
+  SuperMini 排母 + OLED I2C 接口 + 4x4 矩阵键盘接口 + LED，详见 `../hardware/kiboard/BOM.md`

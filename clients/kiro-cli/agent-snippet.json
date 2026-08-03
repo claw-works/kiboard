@@ -4,7 +4,7 @@
     "（~/.kiro/agents/<name>.json 或项目级 .kiro/agents/）。",
     "Kiro CLI 2.16 的 hooks 只认 agent 配置，不读 .kiro/hooks/*.json（实测确认，那是 3.0 的布局）。",
     "改完用 kiro-cli agent validate --path <path> 校验。",
-    "各项结论的实测依据见 docs/kiro-hook-findings.md。"
+    "各项结论的实测依据见 clients/kiro-cli/hook-findings.md。"
   ],
   "_timeout_说明": [
     "⚠️ 最要紧的一项：实测 hook 超时是 fail-open —— 超时后工具照样执行。",

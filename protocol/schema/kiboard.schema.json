@@ -1,0 +1,202 @@
+{
+  "title": "kiboard 协议语义层",
+  "description": "hub / agent 客户端 / 设备三方的消息契约。JSON Schema draft 2020-12 子集。说明见 ../README.md，未标为已实现的部分见其「实现状态」一节。",
+  "$defs": {
+    "protocolVersion": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$",
+      "description": "semver 的 major.minor。主版本不同 hub 应拒绝接入，不要降级凑合。"
+    },
+    "risk": {
+      "type": "string",
+      "enum": ["allow", "normal", "high"],
+      "description": "allow=不打扰人直接放行；normal=需人裁决；high=需人裁决且必须强确认，且不被「全部接受」放行。"
+    },
+    "confirmMethod": {
+      "type": "string",
+      "enum": ["tap", "hold", "gesture", "biometric"],
+      "description": "强确认方式。tap 只适用于 normal 档。"
+    },
+    "enforcement": {
+      "type": "string",
+      "enum": ["block", "approve", "observe"],
+      "description": "客户端运行时能提供的执行力档位。block=能在执行前同步阻止但不能代替用户批准（钩子只有否决权，kiro-cli 与 Claude Code 都是这一档）；approve=能表达真正的批准（如 OpenClaw 的原生审批通道）；observe=没有拦截点，只能记录，拦不住任何东西。审计必须记录它，否则一条 observe 客户端上的 reject 看起来像拦住了，其实命令照样跑了。"
+    },
+    "clientRef": {
+      "type": "object",
+      "description": "请求来自哪个 agent 客户端。用于上屏区分、规则分组、审计。",
+      "properties": {
+        "name": { "type": "string", "description": "客户端标识，如 kiro-cli / claude-code / openclaw。新客户端接入先注册一个名字。" },
+        "version": { "type": "string" },
+        "agent": { "type": "string", "description": "agent 配置名" },
+        "session": { "type": "string" },
+        "cwd": { "type": "string", "description": "设备上显示项目名（取 basename），多项目并发靠它区分" },
+        "host": { "type": "string" },
+        "user": { "type": "string" },
+        "enforcement": { "$ref": "#/$defs/enforcement" }
+      },
+      "required": ["name"],
+      "additionalProperties": true
+    },
+    "hello": {
+      "type": "object",
+      "description": "设备接入时声明自身能力。如实声明是硬要求：声明做不到的能力，后果是 hub 把它不能安全处理的请求推给它。",
+      "properties": {
+        "t": { "const": "hello" },
+        "protocol_version": { "$ref": "#/$defs/protocolVersion" },
+        "device": {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string", "description": "设备唯一标识，进审计的 decided_by.principal" },
+            "kind": { "type": "string", "description": "方案名，与 devices/<name>/ 对应，如 c3-keypad / s3-touch / mobile" },
+            "firmware": { "type": "string" }
+          },
+          "required": ["id", "kind"],
+          "additionalProperties": true
+        },
+        "caps": {
+          "type": "object",
+          "properties": {
+            "render": {
+              "type": "string",
+              "enum": ["self", "hub"],
+              "description": "self=设备自己排版，hub 只发结构化字段（新方案一律用这个）；hub=hub 代为排版，仅为兼容存量哑固件保留。"
+            },
+            "display": {
+              "type": "object",
+              "properties": {
+                "kind": { "type": "string", "enum": ["mono", "color", "app"] },
+                "cols": { "type": "integer", "minimum": 1, "description": "render=hub 时 hub 按它折行" },
+                "rows": { "type": "integer", "minimum": 1 }
+              },
+              "additionalProperties": true
+            },
+            "input": { "type": "string", "description": "如 matrix16 / touch / app" },
+            "confirm": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/confirmMethod" },
+              "description": "支持哪些强确认方式。不支持任何强确认的设备不该收到 risk=high 的请求。"
+            },
+            "confirm_verifiable": {
+              "type": "boolean",
+              "description": "强确认能否由 hub 依据原始事件独立验证。物理键的 hold 可以（true）；手机生物识别只能设备自述（false）。false 时 hub 有权拒绝把 high 档请求推给它。"
+            }
+          },
+          "required": ["render"],
+          "additionalProperties": true
+        }
+      },
+      "required": ["t", "protocol_version", "device", "caps"],
+      "additionalProperties": false
+    },
+    "request": {
+      "type": "object",
+      "description": "hub 推给设备的待审请求。",
+      "properties": {
+        "t": { "const": "request" },
+        "id": { "type": "string", "description": "hub 分配，全局唯一。裁决必须带回它——这是重放防护。" },
+        "verbatim": {
+          "type": "string",
+          "description": "要执行的东西的逐字原文。required-to-display：任何设备实现都必须显示它，且不得被 summary 取代。"
+        },
+        "tool": { "type": "string", "description": "原样透传客户端的工具名，不要翻译。execute_bash 和 Claude Code 的 Bash 是两个名字。" },
+        "summary": {
+          "type": "string",
+          "description": "agent 自己写的意图说明。只能当补充说明，禁止单独显示或当标题：措辞良善内容危险的 summary 会让人在错误前提下批准。"
+        },
+        "client": { "$ref": "#/$defs/clientRef" },
+        "risk": { "$ref": "#/$defs/risk" },
+        "confirm_required": { "$ref": "#/$defs/confirmMethod" },
+        "rule": { "type": ["string", "null"], "description": "命中的规则名，供人判断依据；null 表示走默认档" },
+        "expires_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["t", "id", "verbatim", "risk", "expires_at"],
+      "additionalProperties": false
+    },
+    "decision": {
+      "type": "object",
+      "description": "设备回给 hub 的裁决。",
+      "properties": {
+        "t": { "const": "decision" },
+        "id": { "type": "string", "description": "必须对应某条 request。已过期或不存在的 id 一律丢弃并记审计。" },
+        "verdict": {
+          "type": "string",
+          "enum": ["accept", "reject", "accept_window", "cancel_all"],
+          "description": "accept_window=开启「全部接受」窗口（不覆盖 high 档）；cancel_all=清空待审队列。"
+        },
+        "confirm": {
+          "type": "object",
+          "description": "强确认的证据。能让 hub 验的就报原始事件，别报结论。",
+          "properties": {
+            "method": { "$ref": "#/$defs/confirmMethod" },
+            "events": {
+              "type": "array",
+              "description": "原始事件，由 hub 计算时长。固件不做判定——阈值放 hub 才能改配置就生效，且设备说不了谎。",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "ev": { "type": "string", "enum": ["press", "release"] },
+                  "device_ts": { "type": "integer", "description": "设备单调时钟毫秒，只用于算差值" }
+                },
+                "required": ["ev", "device_ts"],
+                "additionalProperties": false
+              }
+            },
+            "asserted": {
+              "type": "boolean",
+              "description": "true 表示这是设备自述、hub 无法验证（如生物识别）。必须如实填，它决定审计里 verified_by 记成 device 还是 hub。"
+            }
+          },
+          "required": ["method"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["t", "id", "verdict"],
+      "additionalProperties": false
+    },
+    "verdict": {
+      "type": "object",
+      "description": "hub 回给 agent 客户端的结果。客户端按自己的 enforcement 档位把它翻译成运行时能懂的信号。",
+      "properties": {
+        "ok": { "type": "boolean" },
+        "id": { "type": "string" },
+        "decision": {
+          "type": "string",
+          "enum": ["accept", "auto_accept", "reject", "timeout", "cancelled"],
+          "description": "auto_accept=规则表 allow 档或「全部接受」窗口内；cancelled=被取消或设备离线无法展示（hub 返回 503，不把调用方吊死）。"
+        },
+        "approved": { "type": "boolean", "description": "accept 与 auto_accept 为 true，其余为 false" },
+        "reason": {
+          "type": "string",
+          "description": "拒绝理由。客户端要把它写到 stderr——它会进模型上下文，agent 由此知道被拒和原因，可以换方案而不是重试。这是把审批做成闭环的关键。"
+        },
+        "risk": { "$ref": "#/$defs/risk" },
+        "rule": { "type": ["string", "null"] },
+        "decided_by": {
+          "type": "object",
+          "description": "裁决归属。三种设备方案的保证强度不同，不记下来审计就会撒谎。",
+          "properties": {
+            "principal": { "type": "string", "description": "如 device:kb-01，或 rule:只读命令 / model:<名称+版本>" },
+            "kind": { "type": "string" },
+            "confirm": { "$ref": "#/$defs/confirmMethod" },
+            "verified_by": {
+              "type": "string",
+              "enum": ["hub", "device"],
+              "description": "强确认是 hub 依据原始事件独立验证的，还是设备自述的。"
+            }
+          },
+          "required": ["principal"],
+          "additionalProperties": true
+        }
+      },
+      "required": ["ok", "decision", "approved"],
+      "additionalProperties": true
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/hello" },
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/decision" },
+    { "$ref": "#/$defs/verdict" }
+  ]
+}

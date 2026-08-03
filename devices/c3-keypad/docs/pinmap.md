@@ -79,7 +79,7 @@ VIH（0.75×3.3 = 2.48V）边缘的不确定带里。于是：
 
 ## 固件自检
 
-`firmware/tools/matrix_probe` 上电会做两项自检，这类问题上电即可见：
+`../firmware/tools/matrix_probe` 上电会做两项自检，这类问题上电即可见：
 
 ```
 [selftest] 四个行脚纯 INPUT 时均为低        # 有引脚悬空为高会点名报出
@@ -117,7 +117,7 @@ LED1 放在 GPIO2 上没有这个问题：作**输出**时板载上拉无害，�
 - v3：OLED 走 I2C（GPIO4/5），16 键矩阵接 GPIO0/1/2/3 + GPIO6/7/10/20，LED0 占 GPIO9、LED1 占 GPIO21
 - **v4（当前，面包板实测通过）**：矩阵 R3 从 GPIO2 移到 **GPIO21**，LED1 从 GPIO21 移到 **GPIO2**。
   原因是 GPIO2 带板载上拉不能当输入。
-  载板原理图 `hardware/kiboard/kiboard.kicad_sch` **已同步到 v4**，ERC 0 error / 1 warning。
+  载板原理图 `../hardware/kiboard/kiboard.kicad_sch` **已同步到 v4**，ERC 0 error / 1 warning。
 
   原理图侧只改了 6 处网络标签、元件一个都没动：J1-GPIO2 与 J4-R3 换名、
   J2-GPIO21 与 R2 顶端换名、R1 顶端 `GPIO9_LED0`→`3V3`、D1 阴极 `GND`→`GPIO9_LED0`。
@@ -125,5 +125,5 @@ LED1 放在 GPIO2 上没有这个问题：作**输出**时板载上拉无害，�
   不需要翻转 D1。
 
   ERC 查不出 v3 的问题（它不知道板载上拉），所以另加了
-  `hardware/check_netlist.py`：拿导出的 netlist 对固件的 `ROW_PINS`/`COL_PINS`/`leds[]`，
+  `../hardware/check_netlist.py`：拿导出的 netlist 对固件的 `ROW_PINS`/`COL_PINS`/`leds[]`，
   逐条核矩阵 8 线、LED 极性与有效电平、I2C。打板前跑一次，退出码非 0 就是分叉了。

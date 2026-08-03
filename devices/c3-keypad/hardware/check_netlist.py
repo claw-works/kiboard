@@ -6,7 +6,7 @@
 不知道 SuperMini 的 GPIO2/8/9 带板载上拉。这类"原理图自洽但和现实不符"
 的错误只能靠和**实测通过的固件**对比来抓。
 
-用法：
+用法（在 devices/c3-keypad/ 下执行）：
     export PATH="/Applications/KiCad/KiCad.app/Contents/MacOS:$PATH"
     kicad-cli sch export netlist --format kicadxml -o /tmp/v4.xml \
         hardware/kiboard/kiboard.kicad_sch
@@ -25,7 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FIRMWARE = ROOT / "firmware" / "src" / "main.cpp"
 
-# SuperMini 排针的物理引脚顺序，依 hardware/bom/01.webp（官方引脚图）。
+# SuperMini 排针的物理引脚顺序，依 bom/01.webp（官方引脚图）。
 # 改板子才需要改这里。
 J1_PINS: dict[int, str | int] = {1: "5V", 2: "GND", 3: "3V3", 4: 0, 5: 1, 6: 2, 7: 3, 8: 4}
 J2_PINS: dict[int, int] = {1: 5, 2: 6, 3: 7, 4: 8, 5: 9, 6: 10, 7: 20, 8: 21}

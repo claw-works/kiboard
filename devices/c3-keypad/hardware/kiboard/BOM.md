@@ -1,7 +1,7 @@
 # kiboard 载板 BOM（原理图 v4：OLED I2C + 矩阵键盘版）
 
 原理图文件：`kiboard.kicad_sch`（KiCad 10，用 Konnect MCP 生成并校验，ERC 0 error / 1 warning）。
-引脚以 `docs/pinmap.md` 的 **v4** 为准，v4 全部经面包板实测。
+引脚以 `../../docs/pinmap.md` 的 **v4** 为准，v4 全部经面包板实测。
 这是一块**载板**——ESP32-C3 SuperMini 以模组形式通过排母插入，载板不焊裸芯片。
 
 ## 元件清单
@@ -21,14 +21,14 @@ SuperMini 模组、OLED+矩阵键盘一体板均为外购成品，通过排针/�
 
 ## 网络对照
 
-见 `docs/pinmap.md`，含矩阵扫描原理和 GPIO9 strapping 脚说明。
+见 `../../docs/pinmap.md`，含矩阵扫描原理和 GPIO9 strapping 脚说明。
 
 ## 装配说明
 
 1. J1/J2 是 SuperMini 模组插座，用两条 1×8 排母
 2. J3 只接 SDA/SCL 两根信号线；OLED 模块的 VCC/GND 直接接 SuperMini 的 3V3/GND（不经过载板走线，或在 J3 旁另加 2 pin 电源直连）
 3. J4 引脚顺序：接线**以一体板自己的丝印为准**。
-   采购图 `hardware/bom/00.webp` 上标签是 `R4 R3 R2 R1 | C4 C3 C2 C1`，
+   采购图 `../bom/00.webp` 上标签是 `R4 R3 R2 R1 | C4 C3 C2 C1`，
    看着和本文档假设的 `R1..R4 | C1..C4` 相反，但那是**从正面拍的**，
    左右方向和俯视接线时相反。板子上每个引脚都有丝印文字，照字接不会错。
 4. LED 引脚号：KiCad `Device:LED` 的**引脚 1 = K 阴极，引脚 2 = A 阳极**（和直觉相反，
@@ -41,7 +41,7 @@ SuperMini 模组、OLED+矩阵键盘一体板均为外购成品，通过排针/�
    这条 DC 通路会把 GPIO9 压到约 1.7V，落进 VIL(0.83V)/VIH(2.48V) 之间的不确定带，
    可能被判成低而进入下载模式，表现为**时好时坏的启动失败**。灌电流接法下
    GPIO9 被 R1 拉向 3V3，稳定为高。代价是固件里 LED0 逻辑取反（已实现）。
-   完整推导见 `docs/pinmap.md` 的「LED0 为什么必须反接」。
+   完整推导见 `../../docs/pinmap.md` 的「LED0 为什么必须反接」。
 
    GPIO2 没这个问题：它作**输出**时板载上拉无害，上电即为高对 strapping 反而有利，
    而且拉电流接法省掉一条到 R2 的 3V3 走线。
@@ -77,4 +77,4 @@ python3 ../check_netlist.py /tmp/v4.xml
 ```
 
 逐条检查矩阵 8 根线、3 个 LED 的极性与有效电平、I2C 两根线是否和
-`firmware/src/main.cpp` 里的 `ROW_PINS` / `COL_PINS` / `leds[]` 一致。退出码非 0 就是分叉了。
+`../../firmware/src/main.cpp` 里的 `ROW_PINS` / `COL_PINS` / `leds[]` 一致。退出码非 0 就是分叉了。

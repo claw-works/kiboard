@@ -1,13 +1,67 @@
 # 客户端接入契约
 
-kiboard 要给多种 agent 客户端（Kiro CLI、Claude Code、Codex…）当审批闸门。
+kiboard 要给多种 agent 客户端（Kiro CLI、Claude Code、OpenClaw…）当审批闸门。
 这些客户端拦截工具调用的机制各不相同，但**需要人做的判断是同一件事**。
 所以这里定一条规矩：
 
 > **消息体统一，差异只落在「决策通道」这一层。**
 
-风险分级、屏幕渲染、排队、自动接受、审计全部在 hub 侧，客户端适配器只做三件事：
+风险分级、排队、自动接受、审计全部在 hub 侧，客户端适配器只做三件事：
 读本机格式 → 转成统一消息体 → 把 hub 返回的 decision 翻译成本客户端能懂的信号。
+
+**分工**：语义层（消息体长什么样、字段什么意思）的唯一真源是
+[`../protocol/README.md`](../protocol/README.md)；**本文管执行层**——各家客户端的拦截点、
+退出码语义、失败倾向，以及接一个新客户端要验什么。
+
+## 钩子只有否决权，不是授权权
+
+接任何客户端之前必须先想清楚这件事，而且它**不是 Kiro 的怪癖**：
+
+- Kiro CLI：`exit 2` = 阻止，`exit 0` = **不阻止**（不等于已授权）。
+  v3 多一个 `permissionDecision: "ask"`，作用是强制弹一次询问，仍不是代为批准
+- Claude Code：官方文档写明 hook 返回 allow **不会**跳过后面的 deny 与 ask 规则，
+  那些照样评估（[Claude 官方文档](https://code.claude.com/docs/en/agent-sdk/permissions)）
+
+所以设备上按「接受」的真实含义是"**我不否决**"，接下来宿主自己的权限模型还会再判一次。
+两个很实际的后果：
+
+1. **不预先 trust 就会批两次**：设备上按一次键，终端里还要再确认一次。要让设备成为
+   唯一审批点，受管工具必须在宿主侧预先放通（Kiro 的 `allowedTools`）
+2. **合并成一道门之后，那道门必须验证过真的会触发**。宿主侧已经 trust、而 hook 因为
+   matcher 写法 / 缓存 / 超时没生效，等于**零道门**。这三种失效方式都实际踩过，
+   见 [`../clients/kiro-cli/hook-findings.md`](../clients/kiro-cli/hook-findings.md)
+
+例外是 **OpenClaw**：它原生就有 exec approvals（policy + allowlist + 可选人工批准），
+在它上面该把 kiboard 接成一个**审批通道**而不是否决钩子——那样能拿到真正的「批准」语义。
+
+## 执行力档位（`enforcement`）
+
+客户端接入时要如实声明属于哪一档，hub 把它写进审计：
+
+| 档位 | 含义 | 例子 |
+|---|---|---|
+| `block` | 能在执行前同步阻止，但不能代替用户批准 | Kiro CLI、Claude Code 的 PreToolUse |
+| `approve` | 能表达真正的批准 | OpenClaw 的原生审批通道 |
+| `observe` | 没有拦截点，只能记录，**拦不住任何东西** | 无钩子机制的运行时 |
+
+**这个字段不加，审计会撒谎**：一条 `observe` 客户端上的 `reject` 看起来像"拦住了"，
+其实那条命令照样跑了。出事复盘会得出完全错误的结论。
+
+## 接一个新客户端，先回答这五个问题
+
+这些文档往往不写、或者写反，所以每条都要**亲手验**：
+
+| # | 问题 | 答错的后果 |
+|---|---|---|
+| 1 | 有没有**同步的执行前拦截点**？ | 没有就只能做通知和审计，别当闸门用 |
+| 2 | 只能否决，还是能**代替用户批准**？ | 决定要不要在宿主侧预先 trust，否则批两次 |
+| 3 | **超时是 fail-open 还是 fail-closed**？ | Kiro 实测 fail-open——超时后工具照样执行，闸门静默失效 |
+| 4 | **子 agent / 委派路径继承钩子吗**？ | Kiro 2.x 实测不继承，危险命令丢给子 agent 就绕过整套审批 |
+| 5 | 钩子结果**会不会被缓存**？ | Kiro 的 `cache_ttl_seconds` 会让同一条命令第二次不再问人 |
+
+可靠的验证方法只有一个：**故意让钩子拒绝，确认操作真的被拦住**。看配置对不对没用——
+「配了、看着对、但从未生效」是安全配置最危险的失效模式，比没配更糟，
+因为你以为自己被保护着。
 
 ## 为什么必须在客户端跑一个进程
 
@@ -98,11 +152,13 @@ kiboard 要给多种 agent 客户端（Kiro CLI、Claude Code、Codex…）当�
 
 这是各客户端适配器唯一需要各写一遍的地方。
 
-| 客户端 | 钩子 | 批准 | 拒绝 | 表达力 | 默认失败倾向 |
+| 客户端 | 档位 | 钩子 | 批准 | 拒绝 | 默认失败倾向 |
 |---|---|---|---|---|---|
-| **Kiro CLI 2.16** | agent 配置的 `preToolUse` | `exit 0` | `exit 2`，stderr 回给模型 | 只有两态 | 其他退出码 = **放行**（fail-open） |
-| **Claude Code** | `PreToolUse` hook | `exit 0`（静默，CC 仍会自己再问一次）；或 stdout `hookSpecificOutput.permissionDecision="allow"`（免掉二次确认） | `exit 2`，stderr 回给模型 | 三态，多一个 `ask`——**但我们不用**，见下 | 同上。适配器已写，**未在真实 CC 上实测** |
-| **Codex** | 待调研 | ? | ? | 它有自己的 `approval_policy`/sandbox 模型，接法可能完全不同 | ? |
+| **Kiro CLI 2.16** | `block` | agent 配置的 `preToolUse` | `exit 0`（=不否决） | `exit 2`，stderr 回给模型 | 其他退出码 = **放行**；超时也 **fail-open** |
+| **Kiro CLI v3** | `block` | 工作区 `.kiro/hooks/*.json`，对所有会话生效 | `exit 0` | `exit 2` | 同上。matcher 是**真正则**，与 2.x 相反 |
+| **Claude Code** | `block` | `PreToolUse` hook | `exit 0`（CC 仍会自己再问）；或 stdout `hookSpecificOutput.permissionDecision="allow"`（但 deny/ask 规则照样评估） | `exit 2`，stderr 回给模型 | 同上。适配器已写，**未在真实 CC 上实测** |
+| **OpenClaw** | `approve` | 不用钩子：原生 exec approvals + Plugin Approval Hooks | 走它的审批通道（真批准） | 拒绝该 exec | 待实测 |
+| **hermes** | ? | 未调研 | ? | ? | 按上面五问逐条验过再填 |
 
 拒绝时 **stderr 的内容会进模型上下文**（Kiro 与 Claude Code 都是），
 所以适配器要把 hub 返回的 `reason` 写到 stderr —— agent 由此知道"被人拒了、原因是什么"，
@@ -308,7 +364,7 @@ curl -H "X-Api-Key: $KEY" 'http://hub:26041/audit?client=kiro-cli&limit=5'
 而站在设备前的人关心的是"此刻在动什么"。已完成的同理——屏幕只有 4 行，
 历史和计划都没有位置。
 
-每行带客户端 tag：`[kiro] 编译固件`。一个 hub 会同时接 kiro / cc / codex，
+每行带客户端 tag：`[kiro] 编译固件`。一个 hub 会同时接 kiro / cc / openclaw，
 不标出来就不知道这条是谁在做，多客户端下这是必要信息而不是装饰。
 
 ### 分桶：api key + agent
@@ -373,12 +429,15 @@ Kiro CLI 上已经解决：**agent 的待办清单本身是一个工具调用**�
 
 ## 加一个新客户端要做什么
 
-1. 在本文件的「决策通道对照」表里加一行，写清它的钩子、退出码语义、失败倾向
-2. `clients/<name>/` 下写适配器：读它的输入格式 → 调 `kiboard-ask` → 翻译 decision
-3. `hub/rules.toml` 里为它的工具名补规则组
-4. `source.client` 用一个新名字，便于上屏和审计区分
-5. **确认它的"委派/子 agent"类工具也被纳入闸门**。Kiro CLI 实测确认子 agent 的工具调用
+1. **先跑上面的[五问核对表](#接一个新客户端先回答这五个问题)**，尤其第 3、5 条要亲手验，
+   并把结论填进「决策通道对照」表
+2. 定它的 `enforcement` 档位（`block` / `approve` / `observe`），随请求上报
+3. `clients/<name>/` 下写适配器：读它的输入格式 → 调 `kiboard-ask` → 翻译 decision
+4. `hub/rules.toml` 里为它的工具名补规则组
+5. `source.client` 用一个新名字，便于上屏和审计区分
+6. **确认它的"委派/子 agent"类工具也被纳入闸门**。Kiro CLI 实测确认子 agent 的工具调用
    不经过父 agent 的 hook，别的客户端很可能同理——不拦委派的话，把危险命令交给子 agent
    就绕过了整套审批
 
-hub 侧不需要改代码。如果需要改，说明契约设计漏了东西，先回来改这份文档。
+hub 侧不需要改代码。如果需要改，说明契约设计漏了东西，先回来改这份文档
+和 [`../protocol/`](../protocol/)。

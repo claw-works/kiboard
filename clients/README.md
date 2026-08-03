@@ -1,8 +1,8 @@
 # 客户端适配器
 
 各家 agent 客户端拦截工具调用的机制不同，但需要人做的判断是同一件事。
-统一消息体与决策通道对照见 [docs/client-protocol.md](../client-protocol.md)
-（仓库内路径：`docs/client-protocol.md`）。
+统一消息体与决策通道对照见 [docs/client-protocol.md](../docs/client-protocol.md)，
+语义层字段的唯一真源在 [protocol/README.md](../protocol/README.md)。
 
 这些客户端的钩子都是**本机子进程**，没有 webhook 形态，所以每台跑 agent 的机器上
 都要装一个 `kiboard-ask`。它是通用实现，各客户端目录下只放薄壳与配置片段。
@@ -55,7 +55,7 @@ rm ~/.kiboard/bypass       # 恢复
 
 ## 加一个新客户端
 
-1. 在 `docs/client-protocol.md` 的「决策通道对照」表里加一行
+1. 先跑 `docs/client-protocol.md` 里的五问核对表，再在「决策通道对照」表里加一行
 2. 如果它的钩子载荷格式固定，在 `hub/src/bin/ask.rs` 的 `build_request` 里加一个分支；
    否则用 `--client raw`，自己在外面拼好统一消息体喂进 stdin
 3. `hub/rules.toml` 里为它的工具名补规则组
